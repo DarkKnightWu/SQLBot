@@ -17,9 +17,14 @@ class EmbeddingModelInfo(BaseModel):
     device: str = 'cpu'
 
 
-local_embedding_model = EmbeddingModelInfo(folder=settings.LOCAL_MODEL_PATH,
-                                           name=os.path.join(settings.LOCAL_MODEL_PATH, 'embedding',
-                                                             "shibing624_text2vec-base-chinese"))
+# Check if local model exists, if not use default model name for auto-download
+_local_path = os.path.join(settings.LOCAL_MODEL_PATH, 'embedding', "shibing624_text2vec-base-chinese")
+_model_name = _local_path if os.path.exists(_local_path) else settings.DEFAULT_EMBEDDING_MODEL
+
+local_embedding_model = EmbeddingModelInfo(
+    folder=settings.LOCAL_MODEL_PATH,
+    name=_model_name
+)
 
 _lock = threading.Lock()
 locks = {}
