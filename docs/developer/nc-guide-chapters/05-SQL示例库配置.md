@@ -6,7 +6,7 @@
 问题: 查询本月所有已记账凭证
 SQL: |
   SELECT 
-      v.num AS 凭证号,
+      v.no AS 凭证号,
       v.prepareddate AS 制单日期,
       d.subjcode AS 科目编码,
       d.subjname AS 科目名称,
@@ -17,30 +17,80 @@ SQL: |
   INNER JOIN gl_detail d ON v.pk_voucher = d.pk_voucher
   WHERE v.dr = 0 
     AND d.dr = 0
-    AND v.vouchstatus >= 3
-    AND v.cyear = EXTRACT(YEAR FROM CURRENT_DATE)
-    AND v.cmonth = EXTRACT(MONTH FROM CURRENT_DATE)
-  ORDER BY v.num, d.pk_detail
+    AND v.posted = 'Y'
+    AND v.year = '{YEAR}'
+    AND v.period = '{PERIOD}'
+  ORDER BY v.no, d.pk_detail
 数据源: NC财务系统
 
 问题: 查询指定科目的凭证明细
 SQL: |
   SELECT 
       v.prepareddate AS 制单日期,
-      v.num AS 凭证号,
+      v.no AS 凭证号,
       d.explanation AS 摘要,
       COALESCE(d.localdebitamount, 0) AS 借方金额,
       COALESCE(d.localcreditamount, 0) AS 贷方金额,
-      s.accsubjcode AS 科目编码,
-      s.accsubjname AS 科目名称
+      a.subjcode AS 科目编码,
+      a.subjname AS 科目名称
   FROM gl_voucher v
   INNER JOIN gl_detail d ON v.pk_voucher = d.pk_voucher
-  INNER JOIN bd_accsubj s ON d.pk_accsubj = s.pk_accsubj
+  INNER JOIN bd_accsubj a ON d.pk_accsubj = a.pk_accsubj
   WHERE v.dr = 0 
     AND d.dr = 0
-    AND v.vouchstatus >= 3
-    AND s.accsubjcode LIKE '1001%'  -- 可替换为具体科目
-  ORDER BY v.prepareddate, v.num
+    AND v.posted = 'Y'
+    AND a.subjcode LIKE '1001%'
+  ORDER BY v.prepareddate, v.no
+数据源: NC财务系统
+
+问题: 查询本月金额大于1万元的凭证
+SQL: |
+  SELECT 
+      v.year AS 年度,
+      v.period AS 期间,
+      v.no AS 凭证号,
+      d.explanation AS 摘要,
+      d.localdebitamount AS 借方金额
+  FROM gl_detail d
+  JOIN gl_voucher v ON d.pk_voucher = v.pk_voucher
+  JOIN bd_corp c ON v.pk_corp = c.pk_corp
+  WHERE c.unitname LIKE '%{CORP_NAME}%'
+    AND v.year = '{YEAR}'
+    AND v.period = '{PERIOD}'
+    AND d.localdebitamount > 10000
+    AND v.dr = 0
+  ORDER BY d.localdebitamount DESC
+数据源: NC财务系统
+
+问题: 查询包含特定关键词的凭证记录
+SQL: |
+  SELECT 
+      v.prepareddate AS 制单日期,
+      v.no AS 凭证号,
+      d.explanation AS 摘要,
+      d.localdebitamount AS 金额,
+      a.subjname AS 科目
+  FROM gl_detail d
+  JOIN gl_voucher v ON d.pk_voucher = v.pk_voucher
+  JOIN bd_accsubj a ON d.pk_accsubj = a.pk_accsubj
+  WHERE v.pk_corp = (SELECT pk_corp FROM bd_corp WHERE unitname LIKE '%{CORP_NAME}%')
+    AND d.explanation LIKE '%{KEYWORD}%'
+    AND v.year = '{YEAR}'
+    AND v.dr = 0
+数据源: NC财务系统
+
+问题: 查询某制单人经手的所有凭证
+SQL: |
+  SELECT 
+      u.user_name AS 制单人,
+      COUNT(v.pk_voucher) AS 凭证数量,
+      SUM(v.totaldebit) AS 总借方金额
+  FROM gl_voucher v
+  JOIN sm_user u ON v.preparer = u.cuserid
+  WHERE u.user_name LIKE '%{USER_NAME}%'
+    AND v.year = '{YEAR}'
+    AND v.dr = 0
+  GROUP BY u.user_name
 数据源: NC财务系统
 
 问题: 统计本月凭证数量和金额
@@ -53,71 +103,103 @@ SQL: |
   INNER JOIN gl_detail d ON v.pk_voucher = d.pk_voucher
   WHERE v.dr = 0 
     AND d.dr = 0
-    AND v.vouchstatus >= 3
-    AND v.cyear = EXTRACT(YEAR FROM CURRENT_DATE)
-    AND v.cmonth = EXTRACT(MONTH FROM CURRENT_DATE)
+    AND v.posted = 'Y'
+    AND v.year = '{YEAR}'
+    AND v.period = '{PERIOD}'
 数据源: NC财务系统
 ```
 
 ### 5.2 余额查询示例
 
 ```yaml
+问题: 查询某公司某年某月的银行存款余额
+SQL: |
+  SELECT 
+      c.unitname AS 公司名称,
+      a.subjname AS 科目名称,
+      SUM(d.localdebitamount) - SUM(d.localcreditamount) AS 期末余额
+  FROM gl_detail d
+  JOIN gl_voucher v ON d.pk_voucher = v.pk_voucher
+  JOIN bd_corp c ON v.pk_corp = c.pk_corp
+  JOIN bd_accsubj a ON d.pk_accsubj = a.pk_accsubj
+  WHERE c.unitname LIKE '%{CORP_NAME}%'
+    AND v.year = '{YEAR}'
+    AND v.period <= '{PERIOD}'
+    AND a.subjcode LIKE '1002%'
+    AND v.dr = 0
+    AND v.posted = 'Y'
+  GROUP BY c.unitname, a.subjname
+数据源: NC财务系统
+
 问题: 查询某科目期末余额
 SQL: |
   SELECT 
-      s.accsubjcode AS 科目编码,
-      s.accsubjname AS 科目名称,
-      b.cyear AS 年度,
-      b.cmonth AS 期间,
-      b.beginbalance AS 期初余额,
-      b.monthdebit AS 本期借方,
-      b.monthcredit AS 本期贷方,
-      b.endbalance AS 期末余额
+      a.subjcode AS 科目编码,
+      a.subjname AS 科目名称,
+      b.year AS 年度,
+      b.period AS 期间,
+      b.m_qc AS 期初余额,
+      b.m_debit AS 本期借方,
+      b.m_credit AS 本期贷方,
+      b.m_qm AS 期末余额
   FROM gl_balance b
-  INNER JOIN bd_accsubj s ON b.pk_accsubj = s.pk_accsubj
-  WHERE b.cyear = EXTRACT(YEAR FROM CURRENT_DATE)
-    AND b.cmonth = EXTRACT(MONTH FROM CURRENT_DATE)
-    AND s.accsubjcode = '1001'  -- 银行存款科目
-    AND s.dr = 0
+  INNER JOIN bd_accsubj a ON b.pk_accsubj = a.pk_accsubj
+  WHERE b.year = '{YEAR}'
+    AND b.period = '{PERIOD}'
+    AND a.subjcode LIKE '1002%'
+    AND a.dr = 0
+数据源: NC财务系统
+
+问题: 查询现金及银行存款类科目的余额
+SQL: |
+  SELECT 
+      a.subjname AS 科目名称,
+      SUM(b.m_qm) AS 期末余额
+  FROM gl_balance b
+  JOIN bd_accsubj a ON b.pk_accsubj = a.pk_accsubj
+  WHERE (a.subjcode LIKE '1001%' OR a.subjcode LIKE '1002%')
+    AND b.year = '{YEAR}'
+    AND b.period = '{PERIOD}'
+  GROUP BY a.subjname
 数据源: NC财务系统
 
 问题: 查询各一级科目余额汇总
 SQL: |
   SELECT 
-      SUBSTR(s.accsubjcode, 1, 4) AS 科目大类,
-      s.accsubjname AS 科目名称,
-      SUM(b.endbalance) AS 期末余额合计
+      SUBSTR(a.subjcode, 1, 4) AS 科目大类,
+      a.subjname AS 科目名称,
+      SUM(b.m_qm) AS 期末余额合计
   FROM gl_balance b
-  INNER JOIN bd_accsubj s ON b.pk_accsubj = s.pk_accsubj
-  WHERE b.cyear = EXTRACT(YEAR FROM CURRENT_DATE)
-    AND b.cmonth = EXTRACT(MONTH FROM CURRENT_DATE)
-    AND s.subjlevel = 1  -- 一级科目
-    AND s.dr = 0
-  GROUP BY SUBSTR(s.accsubjcode, 1, 4), s.accsubjname
+  INNER JOIN bd_accsubj a ON b.pk_accsubj = a.pk_accsubj
+  WHERE b.year = '{YEAR}'
+    AND b.period = '{PERIOD}'
+    AND a.subjlevel = 1
+    AND a.dr = 0
+  GROUP BY SUBSTR(a.subjcode, 1, 4), a.subjname
   ORDER BY 科目大类
 数据源: NC财务系统
 
 问题: 查询资产负债率
 SQL: |
   WITH asset_total AS (
-      SELECT SUM(b.endbalance) AS total_asset
+      SELECT SUM(b.m_qm) AS total_asset
       FROM gl_balance b
-      INNER JOIN bd_accsubj s ON b.pk_accsubj = s.pk_accsubj
-      WHERE b.cyear = EXTRACT(YEAR FROM CURRENT_DATE)
-        AND b.cmonth = EXTRACT(MONTH FROM CURRENT_DATE)
-        AND s.accsubjcode LIKE '1%'  -- 资产类
-        AND s.isleaf = 'Y'
-        AND s.dr = 0
+      INNER JOIN bd_accsubj a ON b.pk_accsubj = a.pk_accsubj
+      WHERE b.year = '{YEAR}'
+        AND b.period = '{PERIOD}'
+        AND a.subjcode LIKE '1%'
+        AND a.endflag = 'Y'
+        AND a.dr = 0
   ),
   liability_total AS (
-      SELECT SUM(b.endbalance) AS total_liability
+      SELECT SUM(b.m_qm) AS total_liability
       FROM gl_balance b
-      INNER JOIN bd_accsubj s ON b.pk_accsubj = s.pk_accsubj
-      WHERE b.cyear = EXTRACT(YEAR FROM CURRENT_DATE)
-        AND b.cmonth = EXTRACT(MONTH FROM CURRENT_DATE)
-        AND s.accsubjcode LIKE '2%'  -- 负债类
-        AND s.isleaf = 'Y'
-        AND s.dr = 0
+      INNER JOIN bd_accsubj a ON b.pk_accsubj = a.pk_accsubj
+      WHERE b.year = '{YEAR}'
+        AND b.period = '{PERIOD}'
+        AND a.subjcode LIKE '2%'
+        AND a.endflag = 'Y'
+        AND a.dr = 0
   )
   SELECT 
       a.total_asset AS 资产总额,
@@ -127,25 +209,117 @@ SQL: |
 数据源: NC财务系统
 ```
 
-### 5.3 应收应付示例
+### 5.3 费用统计示例
+
+```yaml
+问题: 统计某公司年度总管理费用
+SQL: |
+  SELECT 
+      SUM(d.localdebitamount) AS 年度管理费用总额
+  FROM gl_detail d
+  JOIN gl_voucher v ON d.pk_voucher = v.pk_voucher
+  JOIN bd_accsubj a ON d.pk_accsubj = a.pk_accsubj
+  JOIN bd_corp c ON v.pk_corp = c.pk_corp
+  WHERE c.unitname LIKE '%{CORP_NAME}%'
+    AND v.year = '{YEAR}'
+    AND a.subjcode LIKE '6602%'
+    AND v.dr = 0
+数据源: NC财务系统
+
+问题: 按部门统计某年度的差旅费支出排行
+SQL: |
+  SELECT 
+      dept.deptname AS 部门名称,
+      SUM(d.localdebitamount) AS 差旅费总额
+  FROM gl_detail d
+  JOIN gl_voucher v ON d.pk_voucher = v.pk_voucher
+  JOIN bd_deptdoc dept ON d.pk_deptid = dept.pk_deptdoc
+  JOIN bd_accsubj a ON d.pk_accsubj = a.pk_accsubj
+  WHERE v.pk_corp = (SELECT pk_corp FROM bd_corp WHERE unitname LIKE '%{CORP_NAME}%')
+    AND v.year = '{YEAR}'
+    AND a.subjname LIKE '%差旅费%'
+    AND v.dr = 0
+  GROUP BY dept.deptname
+  ORDER BY SUM(d.localdebitamount) DESC
+数据源: NC财务系统
+
+问题: 查询某个部门在某个月发生的费用总额
+SQL: |
+  SELECT 
+      d.pk_deptdoc,
+      dept.deptname AS 部门名称,
+      SUM(d.m_debit) AS 发生额
+  FROM gl_detail d
+  JOIN bd_deptdoc dept ON d.pk_deptdoc = dept.pk_deptdoc
+  JOIN bd_accsubj a ON d.pk_accsubj = a.pk_accsubj
+  WHERE a.subjcode LIKE '6602%'
+    AND d.year = '{YEAR}'
+    AND d.period = '{PERIOD}'
+  GROUP BY d.pk_deptdoc, dept.deptname
+数据源: NC财务系统
+
+问题: 按部门统计管理费用
+SQL: |
+  SELECT 
+      dept.deptname AS 部门名称,
+      SUM(COALESCE(d.localdebitamount, 0) - COALESCE(d.localcreditamount, 0)) AS 管理费用
+  FROM gl_voucher v
+  INNER JOIN gl_detail d ON v.pk_voucher = d.pk_voucher
+  INNER JOIN bd_deptdoc dept ON d.pk_deptid = dept.pk_deptdoc
+  INNER JOIN bd_accsubj a ON d.pk_accsubj = a.pk_accsubj
+  WHERE v.dr = 0 AND d.dr = 0 AND v.posted = 'Y'
+    AND v.year = '{YEAR}'
+    AND v.period = '{PERIOD}'
+    AND a.subjcode LIKE '6602%'
+  GROUP BY dept.deptname
+  ORDER BY 管理费用 DESC
+数据源: NC财务系统
+```
+
+### 5.4 应收应付示例
 
 ```yaml
 问题: 查询应收账款账龄分析
 SQL: |
   SELECT 
-      c.name AS 客户名称,
+      c.custname AS 客户名称,
       COUNT(*) AS 单据数量,
-      SUM(CASE WHEN CURRENT_DATE - r.billdate <= 30 THEN r.recamount ELSE 0 END) AS "0-30天",
-      SUM(CASE WHEN CURRENT_DATE - r.billdate BETWEEN 31 AND 60 THEN r.recamount ELSE 0 END) AS "31-60天",
-      SUM(CASE WHEN CURRENT_DATE - r.billdate BETWEEN 61 AND 90 THEN r.recamount ELSE 0 END) AS "61-90天",
-      SUM(CASE WHEN CURRENT_DATE - r.billdate > 90 THEN r.recamount ELSE 0 END) AS "90天以上",
-      SUM(r.recamount) AS 合计金额
-  FROM ar_recbill r
-  INNER JOIN bd_customer c ON r.pk_customer = c.pk_customer
-  WHERE r.dr = 0
-    AND r.billstatus >= 2  -- 已审核
-  GROUP BY c.name
+      SUM(CASE WHEN SYSDATE - ar.billdate <= 30 THEN ar.money_bal ELSE 0 END) AS "0-30天",
+      SUM(CASE WHEN SYSDATE - ar.billdate BETWEEN 31 AND 60 THEN ar.money_bal ELSE 0 END) AS "31-60天",
+      SUM(CASE WHEN SYSDATE - ar.billdate BETWEEN 61 AND 90 THEN ar.money_bal ELSE 0 END) AS "61-90天",
+      SUM(CASE WHEN SYSDATE - ar.billdate > 90 THEN ar.money_bal ELSE 0 END) AS "90天以上",
+      SUM(ar.money_bal) AS 合计金额
+  FROM ar_recbill ar
+  INNER JOIN bd_customer c ON ar.pk_customer = c.pk_customer
+  WHERE ar.dr = 0
+    AND ar.money_bal > 0
+  GROUP BY c.custname
   ORDER BY 合计金额 DESC
+数据源: NC财务系统
+
+问题: 查询某客户的应收账款欠款明细
+SQL: |
+  SELECT 
+      c.custname AS 客户名称,
+      ar.billno AS 单据号,
+      ar.money_bal AS 未核销金额,
+      ar.billdate AS 单据日期
+  FROM ar_recbill ar
+  JOIN bd_customer c ON ar.pk_customer = c.pk_customer
+  WHERE c.custname LIKE '%{CUST_NAME}%'
+    AND ar.money_bal > 0
+数据源: NC财务系统
+
+问题: 查询某个供应商的应付账款未核销余额
+SQL: |
+  SELECT 
+      s.supname AS 供应商名称,
+      SUM(ap.money_bal) AS 未核销金额
+  FROM ap_paybill ap
+  JOIN bd_supplier s ON ap.pk_supplier = s.pk_supplier
+  WHERE s.supname LIKE '%{SUP_NAME}%'
+    AND ap.billstatus >= 2
+  GROUP BY s.supname
 数据源: NC财务系统
 
 问题: 查询本月付款明细
@@ -153,21 +327,116 @@ SQL: |
   SELECT 
       p.billno AS 单据编号,
       p.paydate AS 付款日期,
-      s.name AS 供应商名称,
+      s.supname AS 供应商名称,
       p.payamount AS 付款金额,
-      cur.name AS 币种
+      cur.currname AS 币种
   FROM ap_paybill p
   INNER JOIN bd_supplier s ON p.pk_supplier = s.pk_supplier
   LEFT JOIN bd_currtype cur ON p.pk_currtype = cur.pk_currtype
   WHERE p.dr = 0
     AND p.billstatus >= 2
-    AND EXTRACT(YEAR FROM p.paydate) = EXTRACT(YEAR FROM CURRENT_DATE)
-    AND EXTRACT(MONTH FROM p.paydate) = EXTRACT(MONTH FROM CURRENT_DATE)
+    AND TO_CHAR(p.paydate, 'YYYY') = '{YEAR}'
+    AND TO_CHAR(p.paydate, 'MM') = '{PERIOD}'
   ORDER BY p.paydate DESC
+数据源: NC财务系统
+
+问题: 按客户统计应收账款
+SQL: |
+  SELECT 
+      c.custcode AS 客户编码,
+      c.custname AS 客户名称,
+      SUM(b.m_qm) AS 应收余额
+  FROM gl_accass b
+  INNER JOIN bd_cubasdoc c ON b.pk_assid = c.pk_cubasdoc
+  INNER JOIN bd_accsubj a ON b.pk_accsubj = a.pk_accsubj
+  WHERE b.year = '{YEAR}'
+    AND b.period = '{PERIOD}'
+    AND a.subjcode LIKE '1122%'
+    AND b.dr = 0
+  GROUP BY c.custcode, c.custname
+  HAVING SUM(b.m_qm) <> 0
+  ORDER BY 应收余额 DESC
+数据源: NC财务系统
+
+问题: 按供应商统计应付账款
+SQL: |
+  SELECT 
+      s.supcode AS 供应商编码,
+      s.supname AS 供应商名称,
+      SUM(b.m_qm) AS 应付余额
+  FROM gl_accass b
+  INNER JOIN bd_supbasdoc s ON b.pk_assid = s.pk_supbasdoc
+  INNER JOIN bd_accsubj a ON b.pk_accsubj = a.pk_accsubj
+  WHERE b.year = '{YEAR}'
+    AND b.period = '{PERIOD}'
+    AND a.subjcode LIKE '2202%'
+    AND b.dr = 0
+  GROUP BY s.supcode, s.supname
+  HAVING SUM(b.m_qm) <> 0
+  ORDER BY 应付余额 DESC
 数据源: NC财务系统
 ```
 
-### 5.4 固定资产示例
+### 5.5 员工与个人往来示例
+
+```yaml
+问题: 查询某员工的借款余额
+SQL: |
+  SELECT 
+      p.psnname AS 员工姓名,
+      SUM(d.localdebitamount) - SUM(d.localcreditamount) AS 当前借款余额
+  FROM gl_detail d
+  JOIN gl_voucher v ON d.pk_voucher = v.pk_voucher
+  JOIN bd_psndoc p ON d.pk_psndoc = p.pk_psndoc
+  JOIN bd_accsubj a ON d.pk_accsubj = a.pk_accsubj
+  WHERE p.psnname LIKE '%{PERSON_NAME}%'
+    AND a.subjcode LIKE '1221%'
+    AND v.dr = 0
+    AND v.posted = 'Y'
+  GROUP BY p.psnname
+数据源: NC财务系统
+```
+
+### 5.6 项目核算示例
+
+```yaml
+问题: 按项目统计全年的收入与成本
+SQL: |
+  SELECT 
+      proj.project_name AS 项目名称,
+      SUM(CASE WHEN a.subjcode LIKE '6001%' THEN d.localcreditamount ELSE 0 END) AS 项目收入,
+      SUM(CASE WHEN a.subjcode LIKE '6401%' THEN d.localdebitamount ELSE 0 END) AS 项目成本
+  FROM gl_detail d
+  JOIN gl_voucher v ON d.pk_voucher = v.pk_voucher
+  JOIN bd_project proj ON d.pk_project = proj.pk_project
+  JOIN bd_accsubj a ON d.pk_accsubj = a.pk_accsubj
+  WHERE v.year = '{YEAR}'
+    AND v.dr = 0
+  GROUP BY proj.project_name
+数据源: NC财务系统
+
+问题: 项目成本归集分析
+SQL: |
+  SELECT 
+      p.project_code AS 项目编码,
+      p.project_name AS 项目名称,
+      SUM(CASE WHEN a.subjcode LIKE '6401%' THEN COALESCE(d.localdebitamount, 0) ELSE 0 END) AS 直接材料,
+      SUM(CASE WHEN a.subjcode LIKE '6402%' THEN COALESCE(d.localdebitamount, 0) ELSE 0 END) AS 直接人工,
+      SUM(CASE WHEN a.subjcode LIKE '6403%' THEN COALESCE(d.localdebitamount, 0) ELSE 0 END) AS 制造费用,
+      SUM(COALESCE(d.localdebitamount, 0)) AS 成本合计
+  FROM gl_voucher v
+  INNER JOIN gl_detail d ON v.pk_voucher = d.pk_voucher
+  INNER JOIN bd_project p ON d.pk_project = p.pk_project
+  INNER JOIN bd_accsubj a ON d.pk_accsubj = a.pk_accsubj
+  WHERE v.dr = 0 AND d.dr = 0 AND v.posted = 'Y'
+    AND v.year = '{YEAR}'
+    AND a.subjcode LIKE '64%'
+  GROUP BY p.project_code, p.project_name
+  ORDER BY 成本合计 DESC
+数据源: NC财务系统
+```
+
+### 5.7 固定资产示例
 
 ```yaml
 问题: 查询固定资产明细及净值
@@ -182,7 +451,7 @@ SQL: |
       fa.deptname AS 使用部门
   FROM fa_card fa
   WHERE fa.dr = 0
-    AND fa.cardstatus = 1  -- 在用资产
+    AND fa.cardstatus = 1
   ORDER BY fa.originalvalue DESC
 数据源: NC财务系统
 
@@ -202,7 +471,7 @@ SQL: |
 数据源: NC财务系统
 ```
 
-### 5.5 财务报表类示例
+### 5.8 财务报表类示例
 
 ```yaml
 问题: 查询资产负债表主要项目
@@ -210,31 +479,31 @@ SQL: |
   WITH asset_items AS (
       SELECT 
           CASE 
-              WHEN s.accsubjcode LIKE '1001%' THEN '货币资金'
-              WHEN s.accsubjcode LIKE '1002%' THEN '货币资金'
-              WHEN s.accsubjcode LIKE '1122%' THEN '应收账款'
-              WHEN s.accsubjcode LIKE '1123%' THEN '预付账款'
-              WHEN s.accsubjcode LIKE '1401%' THEN '存货'
-              WHEN s.accsubjcode LIKE '1601%' THEN '固定资产'
-              WHEN s.accsubjcode LIKE '1701%' THEN '无形资产'
+              WHEN a.subjcode LIKE '1001%' THEN '货币资金'
+              WHEN a.subjcode LIKE '1002%' THEN '货币资金'
+              WHEN a.subjcode LIKE '1122%' THEN '应收账款'
+              WHEN a.subjcode LIKE '1123%' THEN '预付账款'
+              WHEN a.subjcode LIKE '1401%' THEN '存货'
+              WHEN a.subjcode LIKE '1601%' THEN '固定资产'
+              WHEN a.subjcode LIKE '1701%' THEN '无形资产'
               ELSE '其他资产'
           END AS 项目名称,
-          SUM(b.endbalance) AS 期末余额
+          SUM(b.m_qm) AS 期末余额
       FROM gl_balance b
-      INNER JOIN bd_accsubj s ON b.pk_accsubj = s.pk_accsubj
-      WHERE b.cyear = EXTRACT(YEAR FROM CURRENT_DATE)
-        AND b.cmonth = EXTRACT(MONTH FROM CURRENT_DATE)
-        AND s.accsubjcode LIKE '1%'
-        AND s.isleaf = 'Y'
-        AND s.dr = 0
+      INNER JOIN bd_accsubj a ON b.pk_accsubj = a.pk_accsubj
+      WHERE b.year = '{YEAR}'
+        AND b.period = '{PERIOD}'
+        AND a.subjcode LIKE '1%'
+        AND a.endflag = 'Y'
+        AND a.dr = 0
       GROUP BY CASE 
-          WHEN s.accsubjcode LIKE '1001%' THEN '货币资金'
-          WHEN s.accsubjcode LIKE '1002%' THEN '货币资金'
-          WHEN s.accsubjcode LIKE '1122%' THEN '应收账款'
-          WHEN s.accsubjcode LIKE '1123%' THEN '预付账款'
-          WHEN s.accsubjcode LIKE '1401%' THEN '存货'
-          WHEN s.accsubjcode LIKE '1601%' THEN '固定资产'
-          WHEN s.accsubjcode LIKE '1701%' THEN '无形资产'
+          WHEN a.subjcode LIKE '1001%' THEN '货币资金'
+          WHEN a.subjcode LIKE '1002%' THEN '货币资金'
+          WHEN a.subjcode LIKE '1122%' THEN '应收账款'
+          WHEN a.subjcode LIKE '1123%' THEN '预付账款'
+          WHEN a.subjcode LIKE '1401%' THEN '存货'
+          WHEN a.subjcode LIKE '1601%' THEN '固定资产'
+          WHEN a.subjcode LIKE '1701%' THEN '无形资产'
           ELSE '其他资产'
       END
   )
@@ -247,483 +516,265 @@ SQL: |
 SQL: |
   SELECT 
       '一、营业收入' AS 项目,
-      SUM(CASE WHEN s.accsubjcode LIKE '5001%' 
+      SUM(CASE WHEN a.subjcode LIKE '5001%' 
           THEN COALESCE(d.localcreditamount, 0) - COALESCE(d.localdebitamount, 0) 
           ELSE 0 END) AS 本期金额
   FROM gl_voucher v
   INNER JOIN gl_detail d ON v.pk_voucher = d.pk_voucher
-  INNER JOIN bd_accsubj s ON d.pk_accsubj = s.pk_accsubj
-  WHERE v.dr = 0 AND d.dr = 0 AND v.vouchstatus >= 3
-    AND v.cyear = EXTRACT(YEAR FROM CURRENT_DATE)
-    AND v.cmonth = EXTRACT(MONTH FROM CURRENT_DATE)
+  INNER JOIN bd_accsubj a ON d.pk_accsubj = a.pk_accsubj
+  WHERE v.dr = 0 AND d.dr = 0 AND v.posted = 'Y'
+    AND v.year = '{YEAR}'
+    AND v.period = '{PERIOD}'
   
   UNION ALL
   
   SELECT 
       '二、营业成本' AS 项目,
-      SUM(CASE WHEN s.accsubjcode LIKE '6001%' 
+      SUM(CASE WHEN a.subjcode LIKE '6001%' 
           THEN COALESCE(d.localdebitamount, 0) - COALESCE(d.localcreditamount, 0) 
           ELSE 0 END) AS 本期金额
   FROM gl_voucher v
   INNER JOIN gl_detail d ON v.pk_voucher = d.pk_voucher
-  INNER JOIN bd_accsubj s ON d.pk_accsubj = s.pk_accsubj
-  WHERE v.dr = 0 AND d.dr = 0 AND v.vouchstatus >= 3
-    AND v.cyear = EXTRACT(YEAR FROM CURRENT_DATE)
-    AND v.cmonth = EXTRACT(MONTH FROM CURRENT_DATE)
+  INNER JOIN bd_accsubj a ON d.pk_accsubj = a.pk_accsubj
+  WHERE v.dr = 0 AND d.dr = 0 AND v.posted = 'Y'
+    AND v.year = '{YEAR}'
+    AND v.period = '{PERIOD}'
   
   UNION ALL
   
   SELECT 
       '三、销售费用' AS 项目,
-      SUM(CASE WHEN s.accsubjcode LIKE '6601%' 
+      SUM(CASE WHEN a.subjcode LIKE '6601%' 
           THEN COALESCE(d.localdebitamount, 0) - COALESCE(d.localcreditamount, 0) 
           ELSE 0 END) AS 本期金额
   FROM gl_voucher v
   INNER JOIN gl_detail d ON v.pk_voucher = d.pk_voucher
-  INNER JOIN bd_accsubj s ON d.pk_accsubj = s.pk_accsubj
-  WHERE v.dr = 0 AND d.dr = 0 AND v.vouchstatus >= 3
-    AND v.cyear = EXTRACT(YEAR FROM CURRENT_DATE)
-    AND v.cmonth = EXTRACT(MONTH FROM CURRENT_DATE)
+  INNER JOIN bd_accsubj a ON d.pk_accsubj = a.pk_accsubj
+  WHERE v.dr = 0 AND d.dr = 0 AND v.posted = 'Y'
+    AND v.year = '{YEAR}'
+    AND v.period = '{PERIOD}'
   
   UNION ALL
   
   SELECT 
       '四、管理费用' AS 项目,
-      SUM(CASE WHEN s.accsubjcode LIKE '6602%' 
+      SUM(CASE WHEN a.subjcode LIKE '6602%' 
           THEN COALESCE(d.localdebitamount, 0) - COALESCE(d.localcreditamount, 0) 
           ELSE 0 END) AS 本期金额
   FROM gl_voucher v
   INNER JOIN gl_detail d ON v.pk_voucher = d.pk_voucher
-  INNER JOIN bd_accsubj s ON d.pk_accsubj = s.pk_accsubj
-  WHERE v.dr = 0 AND d.dr = 0 AND v.vouchstatus >= 3
-    AND v.cyear = EXTRACT(YEAR FROM CURRENT_DATE)
-    AND v.cmonth = EXTRACT(MONTH FROM CURRENT_DATE)
+  INNER JOIN bd_accsubj a ON d.pk_accsubj = a.pk_accsubj
+  WHERE v.dr = 0 AND d.dr = 0 AND v.posted = 'Y'
+    AND v.year = '{YEAR}'
+    AND v.period = '{PERIOD}'
   
   UNION ALL
   
   SELECT 
       '五、财务费用' AS 项目,
-      SUM(CASE WHEN s.accsubjcode LIKE '6603%' 
+      SUM(CASE WHEN a.subjcode LIKE '6603%' 
           THEN COALESCE(d.localdebitamount, 0) - COALESCE(d.localcreditamount, 0) 
           ELSE 0 END) AS 本期金额
   FROM gl_voucher v
   INNER JOIN gl_detail d ON v.pk_voucher = d.pk_voucher
-  INNER JOIN bd_accsubj s ON d.pk_accsubj = s.pk_accsubj
-  WHERE v.dr = 0 AND d.dr = 0 AND v.vouchstatus >= 3
-    AND v.cyear = EXTRACT(YEAR FROM CURRENT_DATE)
-    AND v.cmonth = EXTRACT(MONTH FROM CURRENT_DATE)
+  INNER JOIN bd_accsubj a ON d.pk_accsubj = a.pk_accsubj
+  WHERE v.dr = 0 AND d.dr = 0 AND v.posted = 'Y'
+    AND v.year = '{YEAR}'
+    AND v.period = '{PERIOD}'
 数据源: NC财务系统
 ```
 
-### 5.6 财务比率分析示例
+### 5.9 趋势分析示例
 
 ```yaml
-问题: 计算流动比率和速动比率
+问题: 查询某科目的月度发生额趋势
 SQL: |
-  WITH current_asset AS (
-      SELECT SUM(b.endbalance) AS amount
-      FROM gl_balance b
-      INNER JOIN bd_accsubj s ON b.pk_accsubj = s.pk_accsubj
-      WHERE b.cyear = EXTRACT(YEAR FROM CURRENT_DATE)
-        AND b.cmonth = EXTRACT(MONTH FROM CURRENT_DATE)
-        AND s.accsubjcode >= '1001' AND s.accsubjcode < '1500'
-        AND s.isleaf = 'Y' AND s.dr = 0
-  ),
-  inventory AS (
-      SELECT SUM(b.endbalance) AS amount
-      FROM gl_balance b
-      INNER JOIN bd_accsubj s ON b.pk_accsubj = s.pk_accsubj
-      WHERE b.cyear = EXTRACT(YEAR FROM CURRENT_DATE)
-        AND b.cmonth = EXTRACT(MONTH FROM CURRENT_DATE)
-        AND s.accsubjcode >= '1401' AND s.accsubjcode < '1500'
-        AND s.isleaf = 'Y' AND s.dr = 0
-  ),
-  current_liability AS (
-      SELECT SUM(b.endbalance) AS amount
-      FROM gl_balance b
-      INNER JOIN bd_accsubj s ON b.pk_accsubj = s.pk_accsubj
-      WHERE b.cyear = EXTRACT(YEAR FROM CURRENT_DATE)
-        AND b.cmonth = EXTRACT(MONTH FROM CURRENT_DATE)
-        AND s.accsubjcode >= '2001' AND s.accsubjcode < '2500'
-        AND s.isleaf = 'Y' AND s.dr = 0
-  )
   SELECT 
-      a.amount AS 流动资产,
-      i.amount AS 存货,
-      l.amount AS 流动负债,
-      ROUND(a.amount / NULLIF(l.amount, 0), 2) AS 流动比率,
-      ROUND((a.amount - COALESCE(i.amount, 0)) / NULLIF(l.amount, 0), 2) AS 速动比率
-  FROM current_asset a, inventory i, current_liability l
+      v.period AS 月份,
+      SUM(d.localdebitamount) AS 月度发生额
+  FROM gl_detail d
+  JOIN gl_voucher v ON d.pk_voucher = v.pk_voucher
+  JOIN bd_accsubj a ON d.pk_accsubj = a.pk_accsubj
+  JOIN bd_corp c ON v.pk_corp = c.pk_corp
+  WHERE c.unitname LIKE '%{CORP_NAME}%'
+    AND v.year = '{YEAR}'
+    AND a.subjname LIKE '%{SUBJ_NAME}%'
+    AND v.dr = 0
+  GROUP BY v.period
+  ORDER BY v.period
 数据源: NC财务系统
 
-问题: 计算应收账款周转率
+问题: 各月收入趋势分析
 SQL: |
-  WITH revenue AS (
-      SELECT SUM(COALESCE(d.localcreditamount, 0)) AS amount
-      FROM gl_voucher v
-      INNER JOIN gl_detail d ON v.pk_voucher = d.pk_voucher
-      INNER JOIN bd_accsubj s ON d.pk_accsubj = s.pk_accsubj
-      WHERE v.dr = 0 AND d.dr = 0 AND v.vouchstatus >= 3
-        AND v.cyear = EXTRACT(YEAR FROM CURRENT_DATE)
-        AND s.accsubjcode LIKE '5001%'
-  ),
-  ar_begin AS (
-      SELECT SUM(b.beginbalance) AS amount
-      FROM gl_balance b
-      INNER JOIN bd_accsubj s ON b.pk_accsubj = s.pk_accsubj
-      WHERE b.cyear = EXTRACT(YEAR FROM CURRENT_DATE)
-        AND b.cmonth = 1
-        AND s.accsubjcode LIKE '1122%'
-        AND s.isleaf = 'Y' AND s.dr = 0
-  ),
-  ar_end AS (
-      SELECT SUM(b.endbalance) AS amount
-      FROM gl_balance b
-      INNER JOIN bd_accsubj s ON b.pk_accsubj = s.pk_accsubj
-      WHERE b.cyear = EXTRACT(YEAR FROM CURRENT_DATE)
-        AND b.cmonth = EXTRACT(MONTH FROM CURRENT_DATE)
-        AND s.accsubjcode LIKE '1122%'
-        AND s.isleaf = 'Y' AND s.dr = 0
-  )
   SELECT 
-      r.amount AS 营业收入,
-      ab.amount AS 期初应收,
-      ae.amount AS 期末应收,
-      (COALESCE(ab.amount, 0) + COALESCE(ae.amount, 0)) / 2 AS 平均应收,
-      ROUND(r.amount / NULLIF((COALESCE(ab.amount, 0) + COALESCE(ae.amount, 0)) / 2, 0), 2) AS 应收周转率,
-      ROUND(365 / NULLIF(r.amount / NULLIF((COALESCE(ab.amount, 0) + COALESCE(ae.amount, 0)) / 2, 0), 0), 0) AS 周转天数
-  FROM revenue r, ar_begin ab, ar_end ae
+      v.period AS 月份,
+      SUM(COALESCE(d.localcreditamount, 0) - COALESCE(d.localdebitamount, 0)) AS 月收入,
+      SUM(SUM(COALESCE(d.localcreditamount, 0) - COALESCE(d.localdebitamount, 0))) 
+          OVER (ORDER BY v.period) AS 累计收入
+  FROM gl_voucher v
+  INNER JOIN gl_detail d ON v.pk_voucher = d.pk_voucher
+  INNER JOIN bd_accsubj a ON d.pk_accsubj = a.pk_accsubj
+  WHERE v.dr = 0 AND d.dr = 0 AND v.posted = 'Y'
+    AND v.year = '{YEAR}'
+    AND a.subjcode LIKE '5001%'
+  GROUP BY v.period
+  ORDER BY v.period
 数据源: NC财务系统
 
-问题: 计算毛利率和净利率
+问题: 计算本月销售收入的环比增长率
 SQL: |
-  WITH financial_data AS (
+  WITH MonthlySales AS (
       SELECT 
-          SUM(CASE WHEN s.accsubjcode LIKE '5001%' 
-              THEN COALESCE(d.localcreditamount, 0) - COALESCE(d.localdebitamount, 0) 
-              ELSE 0 END) AS revenue,
-          SUM(CASE WHEN s.accsubjcode LIKE '6001%' 
-              THEN COALESCE(d.localdebitamount, 0) - COALESCE(d.localcreditamount, 0) 
-              ELSE 0 END) AS cost,
-          SUM(CASE WHEN s.accsubjcode LIKE '6%' 
-              THEN COALESCE(d.localdebitamount, 0) - COALESCE(d.localcreditamount, 0) 
-              ELSE 0 END) AS total_expense
-      FROM gl_voucher v
-      INNER JOIN gl_detail d ON v.pk_voucher = d.pk_voucher
-      INNER JOIN bd_accsubj s ON d.pk_accsubj = s.pk_accsubj
-      WHERE v.dr = 0 AND d.dr = 0 AND v.vouchstatus >= 3
-        AND v.cyear = EXTRACT(YEAR FROM CURRENT_DATE)
-        AND v.cmonth = EXTRACT(MONTH FROM CURRENT_DATE)
+          v.period,
+          SUM(d.localcreditamount) AS sales_amt
+      FROM gl_detail d
+      JOIN gl_voucher v ON d.pk_voucher = v.pk_voucher
+      JOIN bd_accsubj a ON d.pk_accsubj = a.pk_accsubj
+      WHERE a.subjcode LIKE '6001%'
+        AND v.year = '{YEAR}'
+        AND v.dr = 0
+      GROUP BY v.period
   )
   SELECT 
-      revenue AS 营业收入,
-      cost AS 营业成本,
-      revenue - cost AS 毛利润,
-      ROUND((revenue - cost) / NULLIF(revenue, 0) * 100, 2) AS 毛利率,
-      revenue - total_expense AS 净利润,
-      ROUND((revenue - total_expense) / NULLIF(revenue, 0) * 100, 2) AS 净利率
-  FROM financial_data
+      curr.period AS 月份,
+      curr.sales_amt AS 本月收入,
+      prev.sales_amt AS 上月收入,
+      ROUND((curr.sales_amt - prev.sales_amt) / NULLIF(prev.sales_amt, 0) * 100, 2) AS 环比增长率
+  FROM MonthlySales curr
+  LEFT JOIN MonthlySales prev ON TO_NUMBER(curr.period) = TO_NUMBER(prev.period) + 1
+  ORDER BY curr.period
 数据源: NC财务系统
-```
 
-### 5.7 同比环比分析示例
-
-```yaml
 问题: 收入同比分析
 SQL: |
-  WITH current_month AS (
+  WITH current_year AS (
       SELECT SUM(COALESCE(d.localcreditamount, 0) - COALESCE(d.localdebitamount, 0)) AS amount
       FROM gl_voucher v
       INNER JOIN gl_detail d ON v.pk_voucher = d.pk_voucher
-      INNER JOIN bd_accsubj s ON d.pk_accsubj = s.pk_accsubj
-      WHERE v.dr = 0 AND d.dr = 0 AND v.vouchstatus >= 3
-        AND v.cyear = EXTRACT(YEAR FROM CURRENT_DATE)
-        AND v.cmonth = EXTRACT(MONTH FROM CURRENT_DATE)
-        AND s.accsubjcode LIKE '5001%'
+      INNER JOIN bd_accsubj a ON d.pk_accsubj = a.pk_accsubj
+      WHERE v.dr = 0 AND d.dr = 0 AND v.posted = 'Y'
+        AND v.year = '{YEAR}'
+        AND v.period = '{PERIOD}'
+        AND a.subjcode LIKE '5001%'
   ),
-  last_year_month AS (
+  last_year AS (
       SELECT SUM(COALESCE(d.localcreditamount, 0) - COALESCE(d.localdebitamount, 0)) AS amount
       FROM gl_voucher v
       INNER JOIN gl_detail d ON v.pk_voucher = d.pk_voucher
-      INNER JOIN bd_accsubj s ON d.pk_accsubj = s.pk_accsubj
-      WHERE v.dr = 0 AND d.dr = 0 AND v.vouchstatus >= 3
-        AND v.cyear = EXTRACT(YEAR FROM CURRENT_DATE) - 1
-        AND v.cmonth = EXTRACT(MONTH FROM CURRENT_DATE)
-        AND s.accsubjcode LIKE '5001%'
+      INNER JOIN bd_accsubj a ON d.pk_accsubj = a.pk_accsubj
+      WHERE v.dr = 0 AND d.dr = 0 AND v.posted = 'Y'
+        AND v.year = TO_CHAR(TO_NUMBER('{YEAR}') - 1)
+        AND v.period = '{PERIOD}'
+        AND a.subjcode LIKE '5001%'
   )
   SELECT 
       c.amount AS 本月收入,
       l.amount AS 去年同月收入,
       c.amount - COALESCE(l.amount, 0) AS 同比增减额,
       ROUND((c.amount - COALESCE(l.amount, 0)) / NULLIF(l.amount, 0) * 100, 2) AS 同比增长率
-  FROM current_month c, last_year_month l
-数据源: NC财务系统
-
-问题: 费用环比分析
-SQL: |
-  WITH current_month AS (
-      SELECT 
-          CASE 
-              WHEN s.accsubjcode LIKE '6601%' THEN '销售费用'
-              WHEN s.accsubjcode LIKE '6602%' THEN '管理费用'
-              WHEN s.accsubjcode LIKE '6603%' THEN '财务费用'
-          END AS 费用类型,
-          SUM(COALESCE(d.localdebitamount, 0) - COALESCE(d.localcreditamount, 0)) AS amount
-      FROM gl_voucher v
-      INNER JOIN gl_detail d ON v.pk_voucher = d.pk_voucher
-      INNER JOIN bd_accsubj s ON d.pk_accsubj = s.pk_accsubj
-      WHERE v.dr = 0 AND d.dr = 0 AND v.vouchstatus >= 3
-        AND v.cyear = EXTRACT(YEAR FROM CURRENT_DATE)
-        AND v.cmonth = EXTRACT(MONTH FROM CURRENT_DATE)
-        AND s.accsubjcode LIKE '66%'
-      GROUP BY CASE 
-          WHEN s.accsubjcode LIKE '6601%' THEN '销售费用'
-          WHEN s.accsubjcode LIKE '6602%' THEN '管理费用'
-          WHEN s.accsubjcode LIKE '6603%' THEN '财务费用'
-      END
-  ),
-  last_month AS (
-      SELECT 
-          CASE 
-              WHEN s.accsubjcode LIKE '6601%' THEN '销售费用'
-              WHEN s.accsubjcode LIKE '6602%' THEN '管理费用'
-              WHEN s.accsubjcode LIKE '6603%' THEN '财务费用'
-          END AS 费用类型,
-          SUM(COALESCE(d.localdebitamount, 0) - COALESCE(d.localcreditamount, 0)) AS amount
-      FROM gl_voucher v
-      INNER JOIN gl_detail d ON v.pk_voucher = d.pk_voucher
-      INNER JOIN bd_accsubj s ON d.pk_accsubj = s.pk_accsubj
-      WHERE v.dr = 0 AND d.dr = 0 AND v.vouchstatus >= 3
-        AND ((v.cyear = EXTRACT(YEAR FROM CURRENT_DATE) AND v.cmonth = EXTRACT(MONTH FROM CURRENT_DATE) - 1)
-             OR (v.cyear = EXTRACT(YEAR FROM CURRENT_DATE) - 1 AND v.cmonth = 12 AND EXTRACT(MONTH FROM CURRENT_DATE) = 1))
-        AND s.accsubjcode LIKE '66%'
-      GROUP BY CASE 
-          WHEN s.accsubjcode LIKE '6601%' THEN '销售费用'
-          WHEN s.accsubjcode LIKE '6602%' THEN '管理费用'
-          WHEN s.accsubjcode LIKE '6603%' THEN '财务费用'
-      END
-  )
-  SELECT 
-      c.费用类型,
-      c.amount AS 本月金额,
-      COALESCE(l.amount, 0) AS 上月金额,
-      c.amount - COALESCE(l.amount, 0) AS 环比增减,
-      ROUND((c.amount - COALESCE(l.amount, 0)) / NULLIF(l.amount, 0) * 100, 2) AS 环比增长率
-  FROM current_month c
-  LEFT JOIN last_month l ON c.费用类型 = l.费用类型
-  ORDER BY c.amount DESC
-数据源: NC财务系统
-
-问题: 各月收入趋势分析
-SQL: |
-  SELECT 
-      v.cmonth AS 月份,
-      SUM(COALESCE(d.localcreditamount, 0) - COALESCE(d.localdebitamount, 0)) AS 月收入,
-      SUM(SUM(COALESCE(d.localcreditamount, 0) - COALESCE(d.localdebitamount, 0))) 
-          OVER (ORDER BY v.cmonth) AS 累计收入
-  FROM gl_voucher v
-  INNER JOIN gl_detail d ON v.pk_voucher = d.pk_voucher
-  INNER JOIN bd_accsubj s ON d.pk_accsubj = s.pk_accsubj
-  WHERE v.dr = 0 AND d.dr = 0 AND v.vouchstatus >= 3
-    AND v.cyear = EXTRACT(YEAR FROM CURRENT_DATE)
-    AND s.accsubjcode LIKE '5001%'
-  GROUP BY v.cmonth
-  ORDER BY v.cmonth
+  FROM current_year c, last_year l
 数据源: NC财务系统
 ```
 
-### 5.8 辅助核算分析示例
+### 5.10 TOP N 排行榜查询
 
 ```yaml
-问题: 按客户统计应收账款
+问题: 查询前十大供应商的应付账款余额
 SQL: |
-  SELECT 
-      c.code AS 客户编码,
-      c.name AS 客户名称,
-      SUM(b.endbalance) AS 应收余额
-  FROM gl_accass b
-  INNER JOIN bd_customer c ON b.pk_assid = c.pk_customer
-  INNER JOIN bd_accsubj s ON b.pk_accsubj = s.pk_accsubj
-  WHERE b.cyear = EXTRACT(YEAR FROM CURRENT_DATE)
-    AND b.cmonth = EXTRACT(MONTH FROM CURRENT_DATE)
-    AND s.accsubjcode LIKE '1122%'
-    AND b.dr = 0
-  GROUP BY c.code, c.name
-  HAVING SUM(b.endbalance) <> 0
-  ORDER BY 应收余额 DESC
+  SELECT * FROM (
+      SELECT 
+          sup.supname AS 供应商名称,
+          SUM(d.localcreditamount) - SUM(d.localdebitamount) AS 应付余额
+      FROM gl_detail d
+      JOIN gl_voucher v ON d.pk_voucher = v.pk_voucher
+      JOIN bd_supbasdoc sup ON d.assid = sup.pk_supbasdoc
+      JOIN bd_accsubj a ON d.pk_accsubj = a.pk_accsubj
+      WHERE a.subjcode LIKE '2202%'
+        AND v.pk_corp = (SELECT pk_corp FROM bd_corp WHERE unitname LIKE '%{CORP_NAME}%')
+        AND v.dr = 0
+      GROUP BY sup.supname
+      ORDER BY 应付余额 DESC
+  ) WHERE ROWNUM <= 10
 数据源: NC财务系统
 
-问题: 按供应商统计应付账款
+问题: 统计前十大欠款客户及金额
 SQL: |
-  SELECT 
-      s.code AS 供应商编码,
-      s.name AS 供应商名称,
-      SUM(b.endbalance) AS 应付余额
-  FROM gl_accass b
-  INNER JOIN bd_supplier s ON b.pk_assid = s.pk_supplier
-  INNER JOIN bd_accsubj subj ON b.pk_accsubj = subj.pk_accsubj
-  WHERE b.cyear = EXTRACT(YEAR FROM CURRENT_DATE)
-    AND b.cmonth = EXTRACT(MONTH FROM CURRENT_DATE)
-    AND subj.accsubjcode LIKE '2202%'
-    AND b.dr = 0
-  GROUP BY s.code, s.name
-  HAVING SUM(b.endbalance) <> 0
-  ORDER BY 应付余额 DESC
-数据源: NC财务系统
-
-问题: 按部门统计管理费用
-SQL: |
-  SELECT 
-      dept.name AS 部门名称,
-      SUM(COALESCE(d.localdebitamount, 0) - COALESCE(d.localcreditamount, 0)) AS 管理费用
-  FROM gl_voucher v
-  INNER JOIN gl_detail d ON v.pk_voucher = d.pk_voucher
-  INNER JOIN gl_freevalue fv ON d.pk_detail = fv.pk_detail
-  INNER JOIN org_dept dept ON fv.pk_dept = dept.pk_dept
-  INNER JOIN bd_accsubj s ON d.pk_accsubj = s.pk_accsubj
-  WHERE v.dr = 0 AND d.dr = 0 AND v.vouchstatus >= 3
-    AND v.cyear = EXTRACT(YEAR FROM CURRENT_DATE)
-    AND v.cmonth = EXTRACT(MONTH FROM CURRENT_DATE)
-    AND s.accsubjcode LIKE '6602%'
-  GROUP BY dept.name
-  ORDER BY 管理费用 DESC
-数据源: NC财务系统
-
-问题: 项目成本归集分析
-SQL: |
-  SELECT 
-      p.code AS 项目编码,
-      p.name AS 项目名称,
-      SUM(CASE WHEN s.accsubjcode LIKE '6401%' THEN COALESCE(d.localdebitamount, 0) ELSE 0 END) AS 直接材料,
-      SUM(CASE WHEN s.accsubjcode LIKE '6402%' THEN COALESCE(d.localdebitamount, 0) ELSE 0 END) AS 直接人工,
-      SUM(CASE WHEN s.accsubjcode LIKE '6403%' THEN COALESCE(d.localdebitamount, 0) ELSE 0 END) AS 制造费用,
-      SUM(COALESCE(d.localdebitamount, 0)) AS 成本合计
-  FROM gl_voucher v
-  INNER JOIN gl_detail d ON v.pk_voucher = d.pk_voucher
-  INNER JOIN gl_freevalue fv ON d.pk_detail = fv.pk_detail
-  INNER JOIN bd_project p ON fv.pk_project = p.pk_project
-  INNER JOIN bd_accsubj s ON d.pk_accsubj = s.pk_accsubj
-  WHERE v.dr = 0 AND d.dr = 0 AND v.vouchstatus >= 3
-    AND v.cyear = EXTRACT(YEAR FROM CURRENT_DATE)
-    AND s.accsubjcode LIKE '64%'
-  GROUP BY p.code, p.name
-  ORDER BY 成本合计 DESC
+  SELECT * FROM (
+      SELECT 
+          c.custname AS 客户名称,
+          SUM(ar.money_bal) AS 总欠款
+      FROM ar_recbill ar
+      JOIN bd_customer c ON ar.pk_customer = c.pk_customer
+      WHERE ar.money_bal > 0
+      GROUP BY c.custname
+      ORDER BY 总欠款 DESC
+  ) WHERE ROWNUM <= 10
 数据源: NC财务系统
 ```
 
-### 5.9 日常查询示例
+### 5.11 基础档案查询示例
 
 ```yaml
-问题: 查询今日录入的凭证
+问题: 查询特定名称的公司/主体信息
 SQL: |
   SELECT 
-      v.num AS 凭证号,
-      v.prepareddate AS 制单日期,
-      COUNT(d.pk_detail) AS 分录数,
-      SUM(COALESCE(d.localdebitamount, 0)) AS 借方合计
-  FROM gl_voucher v
-  INNER JOIN gl_detail d ON v.pk_voucher = d.pk_voucher
-  WHERE v.dr = 0 AND d.dr = 0
-    AND v.prepareddate = CURRENT_DATE
-  GROUP BY v.pk_voucher, v.num, v.prepareddate
-  ORDER BY v.num
+      unitname AS 公司名称,
+      unitcode AS 公司编码,
+      pk_corp AS 公司主键
+  FROM bd_corp
+  WHERE unitname LIKE '%{KEYWORD}%'
 数据源: NC财务系统
 
-问题: 查询待审核的凭证
+问题: 查询包含特定名称的会计科目编码
 SQL: |
   SELECT 
-      v.num AS 凭证号,
-      v.prepareddate AS 制单日期,
-      v.explanation AS 摘要,
-      u.user_name AS 制单人
-  FROM gl_voucher v
-  LEFT JOIN sm_user u ON v.pk_prepared = u.pk_user
-  WHERE v.dr = 0
-    AND v.vouchstatus < 2  -- 未审核
-    AND v.cyear = EXTRACT(YEAR FROM CURRENT_DATE)
-    AND v.cmonth = EXTRACT(MONTH FROM CURRENT_DATE)
-  ORDER BY v.prepareddate DESC
+      subjname AS 科目名称,
+      subjcode AS 科目编码,
+      pk_accsubj AS 科目主键
+  FROM bd_accsubj
+  WHERE subjname LIKE '%{KEYWORD}%'
+    AND pk_corp = '{PK_CORP}'
 数据源: NC财务系统
 
-问题: 查询大额凭证（金额超过100万）
+问题: 查询特定部门的名称和负责人
 SQL: |
   SELECT 
-      v.num AS 凭证号,
-      v.prepareddate AS 制单日期,
-      s.accsubjcode AS 科目编码,
-      s.accsubjname AS 科目名称,
-      d.explanation AS 摘要,
-      COALESCE(d.localdebitamount, 0) AS 借方金额,
-      COALESCE(d.localcreditamount, 0) AS 贷方金额
-  FROM gl_voucher v
-  INNER JOIN gl_detail d ON v.pk_voucher = d.pk_voucher
-  INNER JOIN bd_accsubj s ON d.pk_accsubj = s.pk_accsubj
-  WHERE v.dr = 0 AND d.dr = 0 AND v.vouchstatus >= 3
-    AND v.cyear = EXTRACT(YEAR FROM CURRENT_DATE)
-    AND (COALESCE(d.localdebitamount, 0) >= 1000000 
-         OR COALESCE(d.localcreditamount, 0) >= 1000000)
-  ORDER BY GREATEST(COALESCE(d.localdebitamount, 0), COALESCE(d.localcreditamount, 0)) DESC
+      deptname AS 部门名称,
+      deptcode AS 部门编码,
+      principal AS 负责人
+  FROM bd_deptdoc
+  WHERE deptname LIKE '%{KEYWORD}%'
 数据源: NC财务系统
 
-问题: 银行存款日记账
+问题: 查询客户或供应商的基础档案信息
 SQL: |
   SELECT 
-      v.prepareddate AS 日期,
-      v.num AS 凭证号,
-      d.explanation AS 摘要,
-      COALESCE(d.localdebitamount, 0) AS 借方金额,
-      COALESCE(d.localcreditamount, 0) AS 贷方金额,
-      SUM(COALESCE(d.localdebitamount, 0) - COALESCE(d.localcreditamount, 0)) 
-          OVER (ORDER BY v.prepareddate, v.num) AS 余额
-  FROM gl_voucher v
-  INNER JOIN gl_detail d ON v.pk_voucher = d.pk_voucher
-  INNER JOIN bd_accsubj s ON d.pk_accsubj = s.pk_accsubj
-  WHERE v.dr = 0 AND d.dr = 0 AND v.vouchstatus >= 3
-    AND v.cyear = EXTRACT(YEAR FROM CURRENT_DATE)
-    AND v.cmonth = EXTRACT(MONTH FROM CURRENT_DATE)
-    AND s.accsubjcode LIKE '1002%'  -- 银行存款
-  ORDER BY v.prepareddate, v.num
-数据源: NC财务系统
-
-问题: 查询未核销的预付账款
-SQL: |
-  SELECT 
-      s.name AS 供应商名称,
-      b.endbalance AS 预付余额,
-      CASE WHEN b.endbalance > 0 THEN '预付款待核销'
-           WHEN b.endbalance < 0 THEN '需补付款'
-           ELSE '已核销' END AS 状态
-  FROM gl_accass b
-  INNER JOIN bd_supplier s ON b.pk_assid = s.pk_supplier
-  INNER JOIN bd_accsubj subj ON b.pk_accsubj = subj.pk_accsubj
-  WHERE b.cyear = EXTRACT(YEAR FROM CURRENT_DATE)
-    AND b.cmonth = EXTRACT(MONTH FROM CURRENT_DATE)
-    AND subj.accsubjcode LIKE '1123%'  -- 预付账款
-    AND b.dr = 0
-    AND b.endbalance <> 0
-  ORDER BY ABS(b.endbalance) DESC
+      custname AS 客商名称,
+      custcode AS 客商编码
+  FROM bd_cubasdoc
+  WHERE custname LIKE '%{KEYWORD}%'
 数据源: NC财务系统
 ```
 
-### 5.10 多组织对比示例
+### 5.12 多组织对比示例
 
 ```yaml
 问题: 各公司收入对比
 SQL: |
   SELECT 
-      o.name AS 公司名称,
+      c.unitname AS 公司名称,
       SUM(COALESCE(d.localcreditamount, 0) - COALESCE(d.localdebitamount, 0)) AS 收入金额,
       ROUND(SUM(COALESCE(d.localcreditamount, 0) - COALESCE(d.localdebitamount, 0)) * 100.0 / 
             SUM(SUM(COALESCE(d.localcreditamount, 0) - COALESCE(d.localdebitamount, 0))) OVER (), 2) AS 占比
   FROM gl_voucher v
   INNER JOIN gl_detail d ON v.pk_voucher = d.pk_voucher
-  INNER JOIN bd_accsubj s ON d.pk_accsubj = s.pk_accsubj
-  INNER JOIN org_orgs o ON v.pk_org = o.pk_org
-  WHERE v.dr = 0 AND d.dr = 0 AND v.vouchstatus >= 3
-    AND v.cyear = EXTRACT(YEAR FROM CURRENT_DATE)
-    AND v.cmonth = EXTRACT(MONTH FROM CURRENT_DATE)
-    AND s.accsubjcode LIKE '5001%'
-  GROUP BY o.name
+  INNER JOIN bd_accsubj a ON d.pk_accsubj = a.pk_accsubj
+  INNER JOIN bd_corp c ON v.pk_corp = c.pk_corp
+  WHERE v.dr = 0 AND d.dr = 0 AND v.posted = 'Y'
+    AND v.year = '{YEAR}'
+    AND v.period = '{PERIOD}'
+    AND a.subjcode LIKE '5001%'
+  GROUP BY c.unitname
   ORDER BY 收入金额 DESC
 数据源: NC财务系统
 
@@ -731,23 +782,22 @@ SQL: |
 SQL: |
   SELECT 
       CASE 
-          WHEN s.accsubjcode LIKE '1%' THEN '资产'
-          WHEN s.accsubjcode LIKE '2%' THEN '负债'
-          WHEN s.accsubjcode LIKE '3%' THEN '所有者权益'
+          WHEN a.subjcode LIKE '1%' THEN '资产'
+          WHEN a.subjcode LIKE '2%' THEN '负债'
+          WHEN a.subjcode LIKE '3%' THEN '所有者权益'
       END AS 类别,
-      SUM(b.endbalance) AS 合并金额
+      SUM(b.m_qm) AS 合并金额
   FROM gl_balance b
-  INNER JOIN bd_accsubj s ON b.pk_accsubj = s.pk_accsubj
-  WHERE b.cyear = EXTRACT(YEAR FROM CURRENT_DATE)
-    AND b.cmonth = EXTRACT(MONTH FROM CURRENT_DATE)
-    AND s.subjlevel = 1  -- 一级科目
-    AND s.dr = 0
+  INNER JOIN bd_accsubj a ON b.pk_accsubj = a.pk_accsubj
+  WHERE b.year = '{YEAR}'
+    AND b.period = '{PERIOD}'
+    AND a.subjlevel = 1
+    AND a.dr = 0
   GROUP BY CASE 
-      WHEN s.accsubjcode LIKE '1%' THEN '资产'
-      WHEN s.accsubjcode LIKE '2%' THEN '负债'
-      WHEN s.accsubjcode LIKE '3%' THEN '所有者权益'
+      WHEN a.subjcode LIKE '1%' THEN '资产'
+      WHEN a.subjcode LIKE '2%' THEN '负债'
+      WHEN a.subjcode LIKE '3%' THEN '所有者权益'
   END
   ORDER BY 类别
 数据源: NC财务系统
 ```
-
