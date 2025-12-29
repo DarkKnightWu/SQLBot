@@ -5,7 +5,6 @@ import LayoutDsl from '@/components/layout/LayoutDsl.vue'
 import SinglePage from '@/components/layout/SinglePage.vue'
 import login from '@/views/login/index.vue'
 import chat from '@/views/chat/index.vue'
-import Datasource from '@/views/ds/Datasource.vue'
 import DashboardEditor from '@/views/dashboard/editor/index.vue'
 import DashboardPreview from '@//views/dashboard/preview/SQPreviewSingle.vue'
 import Dashboard from '@/views/dashboard/index.vue'
@@ -64,9 +63,10 @@ export const routes = [
       },
     ],
   },
-  {
+  /* {
     path: '/ds',
     component: LayoutDsl,
+    name: 'ds-menu',
     redirect: '/ds/index',
     children: [
       {
@@ -76,7 +76,7 @@ export const routes = [
         meta: { title: t('menu.Data Connections'), iconActive: 'ds', iconDeActive: 'noDs' },
       },
     ],
-  },
+  }, */
   {
     path: '/dashboard',
     component: LayoutDsl,
