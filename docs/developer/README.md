@@ -19,6 +19,8 @@
 - [3.1 API 接口文档](./08-api-documentation.md)
 - [3.2 核心模块详细设计](./09-core-modules.md)
 - [3.3 权限与安全设计](./10-security-design.md)
+- [3.4 权限控制实现详解](./23-permission-implementation.md)
+
 
 ### 第四部分：实现指南
 - [4.1 后端代码结构](./11-backend-codebase.md)
